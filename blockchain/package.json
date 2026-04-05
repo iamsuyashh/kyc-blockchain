@@ -1,0 +1,17 @@
+{
+  "name": "kyc-blockchain",
+  "version": "1.0.0",
+  "description": "KYC Blockchain Backend",
+  "main": "index.js",
+  "scripts": {
+    "test": "hardhat test",
+    "compile": "hardhat compile",
+    "deploy:local": "hardhat run scripts/deploy.js --network localhost",
+    "ganache": "ganache --chain.chainId 1337"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "ganache": "^7.9.2",
+    "hardhat": "^2.22.8"
+  }
+}
