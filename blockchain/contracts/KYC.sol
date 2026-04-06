@@ -28,6 +28,15 @@ contract KYC {
     // "None", "Pending", "Approved", "Rejected"
     mapping(address => mapping(address => string)) public bankCustomerStatus;
     
+    // Feedback system
+    struct Feedback {
+        address customer;
+        string userName;
+        string message;
+    }
+    
+    mapping(address => Feedback[]) public bankFeedbacks;
+    
     event BankRegistered(address indexed bankAddress, string name);
     event CustomerRegistered(address indexed customerAddress, string name);
     event AccessGranted(address indexed customerAddress, address indexed bankAddress);
@@ -124,5 +133,22 @@ contract KYC {
     // Utility to get a customer's specific status with a specific bank
     function getStatusWithBank(address _customerAddress, address _bankAddress) public view returns (string memory, bool) {
         return (bankCustomerStatus[_bankAddress][_customerAddress], customerBankAccess[_customerAddress][_bankAddress]);
+    }
+
+    // Feedback functions
+    function addFeedback(address _bankAddress, string memory _message) public {
+        require(customers[msg.sender].isRegistered, "Only registered customers can leave feedback");
+        require(banks[_bankAddress].isRegistered, "Bank is not registered");
+        
+        bankFeedbacks[_bankAddress].push(Feedback({
+            customer: msg.sender,
+            userName: customers[msg.sender].userName,
+            message: _message
+        }));
+    }
+    
+    function getBankFeedbacks(address _bankAddress) public view returns (Feedback[] memory) {
+        require(banks[_bankAddress].isRegistered, "Bank is not registered");
+        return bankFeedbacks[_bankAddress];
     }
 }
