@@ -40,6 +40,11 @@ function App() {
   const [allBanks, setAllBanks] = useState([]);
   const [customerBankStatuses, setCustomerBankStatuses] = useState([]); // Array of statuses for the customer
   const [pendingRequests, setPendingRequests] = useState([]); // For Bank
+  
+  // Feedback Data
+  const [bankFeedbacks, setBankFeedbacks] = useState([]);
+  const [feedbackText, setFeedbackText] = useState("");
+  const [selectedBankForFeedback, setSelectedBankForFeedback] = useState("");
 
   useEffect(() => {
     async function init() {
@@ -124,7 +129,10 @@ function App() {
         } catch(e) {}
       }
       
-      if (bankData.isRegistered) await fetchPendingRequests(_contract);
+      if (bankData.isRegistered) {
+          await fetchPendingRequests(_contract);
+          await fetchBankFeedbacks(_contract, address);
+      }
       if (custData.isRegistered) await fetchCustomerStatuses(_contract, address);
       
     } catch (err) {
@@ -136,6 +144,13 @@ function App() {
     try {
       const banks = await _contract.getAllBanks();
       setAllBanks(banks || []);
+    } catch (err) { console.error(err); }
+  };
+
+  const fetchBankFeedbacks = async (_contract, address) => {
+    try {
+      const fb = await _contract.getBankFeedbacks(address);
+      setBankFeedbacks(fb);
     } catch (err) { console.error(err); }
   };
 
@@ -237,6 +252,16 @@ function App() {
     } catch(e) { setErrorMessage(e.reason || e.message); }
   };
 
+  const submitFeedback = async () => {
+    if(!contract || !selectedBankForFeedback || !feedbackText) return;
+    try {
+      const tx = await contract.addFeedback(selectedBankForFeedback, feedbackText);
+      await tx.wait();
+      setSuccessMessage("Feedback submitted successfully.");
+      setFeedbackText("");
+    } catch(e) { setErrorMessage(e.reason || e.message); }
+  };
+
   // --- RENDERERS ---
 
   if (!isLoggedIn) {
@@ -311,13 +336,24 @@ function App() {
             <div className={`nav-item ${activeTab === 'Access' ? 'active' : ''}`} onClick={() => setActiveTab('Access')}>
               🔐 Access Control
             </div>
+            <div className={`nav-item ${activeTab === 'Feedback' ? 'active' : ''}`} onClick={() => setActiveTab('Feedback')}>
+              🗣️ Provide Feedback
+            </div>
           </>
         )}
         
         {isBank && (
-          <div className={`nav-item ${activeTab === 'Requests' ? 'active' : ''}`} onClick={() => { setActiveTab('Requests'); setSelectedRequest(null); }}>
-             📥 KYC Queue
-          </div>
+          <>
+            <div className={`nav-item ${activeTab === 'Requests' ? 'active' : ''}`} onClick={() => { setActiveTab('Requests'); setSelectedRequest(null); }}>
+               📥 KYC Queue
+            </div>
+            <div className={`nav-item ${activeTab === 'Processed' ? 'active' : ''}`} onClick={() => { setActiveTab('Processed'); setSelectedRequest(null); }}>
+               ✅ Processed KYC
+            </div>
+            <div className={`nav-item ${activeTab === 'Feedbacks' ? 'active' : ''}`} onClick={() => { setActiveTab('Feedbacks'); setSelectedRequest(null); }}>
+               🗣️ Received Feedbacks
+            </div>
+          </>
         )}
 
         <div style={{flex: 1}}></div>
@@ -437,7 +473,7 @@ function App() {
                 </tr>
               </thead>
               <tbody>
-                {pendingRequests.map(r => (
+                {pendingRequests.filter(r => r.status === 'Pending').map(r => (
                   <tr key={r.address}>
                     <td><small>{r.address}</small></td>
                     <td>{r.userName}</td>
@@ -447,7 +483,7 @@ function App() {
                     </td>
                   </tr>
                 ))}
-                {pendingRequests.length === 0 && <tr><td colSpan="4">No customers have granted you access to their data.</td></tr>}
+                {pendingRequests.filter(r => r.status === 'Pending').length === 0 && <tr><td colSpan="4">No pending customers in the queue.</td></tr>}
               </tbody>
             </table>
           </div>
@@ -479,10 +515,119 @@ function App() {
 
             <hr/>
             <div className="flex gap-4 mt-4">
-               <button className="btn-primary" onClick={() => setKYCStatus(selectedRequest.address, true)} disabled={selectedRequest.status === 'Approved'}>Approve KYC</button>
-               <button className="btn-danger" onClick={() => setKYCStatus(selectedRequest.address, false)} disabled={selectedRequest.status === 'Rejected'}>Reject KYC</button>
+               <button className="btn-primary" onClick={() => setKYCStatus(selectedRequest.address, true)}>Approve KYC</button>
+               <button className="btn-danger" onClick={() => setKYCStatus(selectedRequest.address, false)}>Reject KYC</button>
             </div>
             {selectedRequest.status !== 'Pending' && <p className="mt-4">Current Status: <span className={`badge badge-${selectedRequest.status.toLowerCase()}`}>{selectedRequest.status}</span></p>}
+          </div>
+        )}
+
+        {isBank && activeTab === 'Processed' && !selectedRequest && (
+          <div className="card">
+            <h3>Processed Customers (Previous History)</h3>
+            <p>Customers whose KYC requests you have already approved or rejected.</p>
+            <table>
+              <thead>
+                <tr>
+                  <th>Customer Address</th>
+                  <th>Username</th>
+                  <th>Status</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pendingRequests.filter(r => r.status !== 'Pending').map(r => (
+                  <tr key={r.address}>
+                    <td><small>{r.address}</small></td>
+                    <td>{r.userName}</td>
+                    <td><span className={`badge badge-${r.status.toLowerCase()}`}>{r.status}</span></td>
+                    <td>
+                      <button onClick={() => setSelectedRequest(r)}>View</button>
+                    </td>
+                  </tr>
+                ))}
+                {pendingRequests.filter(r => r.status !== 'Pending').length === 0 && <tr><td colSpan="4">No processed customers in history.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        )}
+        
+        {isBank && activeTab === 'Processed' && selectedRequest && (
+          <div className="card" style={{maxWidth: 800}}>
+            <button className="btn-outline mb-4" onClick={() => setSelectedRequest(null)}>← Back to List</button>
+            <h3>Reviewing Previously Processed: {selectedRequest.userName}</h3>
+            <p><strong>Address:</strong> {selectedRequest.address}</p>
+            <hr/>
+            
+            {(() => {
+              try {
+                const data = JSON.parse(selectedRequest.payload);
+                return (
+                  <div className="stats-grid" style={{textAlign:'left'}}>
+                    <div><label>Full Name</label><h4>{data.fullName || 'N/A'}</h4></div>
+                    <div><label>Date of Birth</label><h4>{data.dob || 'N/A'}</h4></div>
+                    <div><label>ID Number</label><h4>{data.idNumber || 'N/A'}</h4></div>
+                    <div><label>Nationality</label><h4>{data.nationality || 'N/A'}</h4></div>
+                    <div style={{gridColumn: '1 / -1'}}><label>Physical Address</label><h4>{data.physicalAddress || 'N/A'}</h4></div>
+                  </div>
+                );
+              } catch(e) {
+                return <div className="alert alert-error">Customer data payload is invalid or empty.</div>
+              }
+            })()}
+
+            <hr/>
+            <p className="mt-4"><strong>Current Status:</strong> <span className={`badge badge-${selectedRequest.status.toLowerCase()}`}>{selectedRequest.status}</span></p>
+            <p><small>You may still modify the status if new findings arise.</small></p>
+            <div className="flex gap-4 mt-4">
+               <button className="btn-primary" onClick={() => setKYCStatus(selectedRequest.address, true)}>Change to Approved</button>
+               <button className="btn-danger" onClick={() => setKYCStatus(selectedRequest.address, false)}>Change to Rejected</button>
+            </div>
+          </div>
+        )}
+
+        {isBank && activeTab === 'Feedbacks' && (
+          <div className="card">
+            <h3>Customer Feedbacks</h3>
+            <p>What customers are saying about your services.</p>
+            {bankFeedbacks.length === 0 ? (
+              <p style={{color: '#8b949e'}}>No feedback received yet.</p>
+            ) : (
+              <div style={{display: 'flex', flexDirection: 'column', gap: '1rem'}}>
+                {bankFeedbacks.map((fb, idx) => (
+                  <div key={idx} style={{padding: '1rem', border: '1px solid #30363d', borderRadius: '8px', textAlign: 'left'}}>
+                    <div style={{fontWeight: 'bold', marginBottom: '0.5rem'}}>{fb.userName} <span style={{fontSize:'0.8rem', color:'#8b949e'}}>({fb.customer.slice(0,8)}...)</span></div>
+                    <div>{fb.message}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {isCustomer && activeTab === 'Feedback' && (
+          <div className="card" style={{maxWidth: 600}}>
+            <h3>Leave Feedback for a Bank</h3>
+            <p>Your feedback helps improve the network.</p>
+            
+            <label>Select Bank</label>
+            <select value={selectedBankForFeedback} onChange={e => setSelectedBankForFeedback(e.target.value)} style={{width: '100%', padding: '0.8rem', marginBottom: '1rem', background: '#0d1117', color: 'white', border: '1px solid #30363d', borderRadius: '4px'}}>
+              <option value="">-- Choose a Bank --</option>
+              {allBanks.map(b => (
+                <option key={b.ethAddress} value={b.ethAddress}>{b.name} ({b.ethAddress.slice(0,8)}...)</option>
+              ))}
+            </select>
+            
+            <label>Feedback Message</label>
+            <textarea 
+              value={feedbackText} 
+              onChange={e => setFeedbackText(e.target.value)} 
+              rows={4}
+              style={{width: '100%', padding: '0.8rem', marginBottom: '1rem', background: '#0d1117', color: 'white', border: '1px solid #30363d', borderRadius: '4px'}}
+              placeholder="Share your experience..."
+            ></textarea>
+            
+            <button className="btn-primary" onClick={submitFeedback}>✉️ Submit Feedback</button>
           </div>
         )}
 
