@@ -2,153 +2,176 @@
 pragma solidity ^0.8.24;
 
 contract KYC {
-    struct Bank {
-        string name;
-        address ethAddress;
-        bool isRegistered;
-    }
+    // ── State Machine ──────────────────────────────────────────────
+    enum Status { None, Pending, Accepted, Submitted, Verified, Rejected }
 
-    struct Customer {
-        string userName;
-        string dataPayload; // JSON string payload
-        bool isRegistered;
-    }
-    
-    mapping(address => Bank) public banks;
-    mapping(address => Customer) public customers;
-    
-    // address[] arrays to fetch lists on frontend
-    address[] public registeredBankAddresses;
-    address[] public registeredCustomerAddresses;
-
-    // Granular Access Control: Has the customer granted access to the respective bank?
-    mapping(address => mapping(address => bool)) public customerBankAccess;
-    
-    // Status mapping: What is the bank's KYC decision for a specific customer?
-    // "None", "Pending", "Approved", "Rejected"
-    mapping(address => mapping(address => string)) public bankCustomerStatus;
-    
-    // Feedback system
-    struct Feedback {
+    struct KYCRequest {
+        address bank;
         address customer;
-        string userName;
-        string message;
+        Status  status;
+        string  documentHash;   // IPFS / SHA-256 hash submitted by customer
+        uint256 createdAt;
+        uint256 updatedAt;
     }
-    
-    mapping(address => Feedback[]) public bankFeedbacks;
-    
-    event BankRegistered(address indexed bankAddress, string name);
-    event CustomerRegistered(address indexed customerAddress, string name);
-    event AccessGranted(address indexed customerAddress, address indexed bankAddress);
-    event AccessRevoked(address indexed customerAddress, address indexed bankAddress);
-    event KYCStatusChanged(address indexed customerAddress, address indexed bankAddress, string newStatus);
 
-    function registerBank(string memory _name) public {
-        require(!banks[msg.sender].isRegistered, "Bank already exists");
-        require(!customers[msg.sender].isRegistered, "Customers cannot be banks");
-        banks[msg.sender] = Bank(_name, msg.sender, true);
-        registeredBankAddresses.push(msg.sender);
+    // requestId → KYCRequest
+    mapping(uint256 => KYCRequest) public requests;
+    uint256 public requestCount;
+
+    // Lookup helpers
+    mapping(address => uint256[]) public customerRequests;   // customer → requestIds
+    mapping(address => uint256[]) public bankRequests;        // bank     → requestIds
+
+    // Role tracking (lightweight – real auth lives in the backend)
+    mapping(address => bool) public isBank;
+    mapping(address => bool) public isCustomer;
+    mapping(address => string) public bankNames;
+    mapping(address => string) public customerNames;
+
+    address[] public registeredBanks;
+    address[] public registeredCustomers;
+
+    // ── Events ─────────────────────────────────────────────────────
+    event BankRegistered(address indexed bank, string name);
+    event CustomerRegistered(address indexed customer, string name);
+    event KYCInitiated(uint256 indexed requestId, address indexed bank, address indexed customer);
+    event KYCAccepted(uint256 indexed requestId, address indexed customer);
+    event KYCSubmitted(uint256 indexed requestId, address indexed customer, string documentHash);
+    event KYCVerified(uint256 indexed requestId, address indexed bank);
+    event KYCRejected(uint256 indexed requestId, address indexed bank);
+    event KYCReopened(uint256 indexed requestId, address indexed customer);
+
+    // ── Registration ───────────────────────────────────────────────
+    function registerBank(string memory _name) external {
+        require(!isBank[msg.sender],     "Already registered as bank");
+        require(!isCustomer[msg.sender], "Address is a customer");
+        isBank[msg.sender] = true;
+        bankNames[msg.sender] = _name;
+        registeredBanks.push(msg.sender);
         emit BankRegistered(msg.sender, _name);
     }
-    
-    function registerCustomer(string memory _userName) public {
-        require(!customers[msg.sender].isRegistered, "Customer already exists");
-        require(!banks[msg.sender].isRegistered, "Banks cannot be customers");
-        customers[msg.sender] = Customer(_userName, "", true);
-        registeredCustomerAddresses.push(msg.sender);
-        emit CustomerRegistered(msg.sender, _userName);
-    }
-    
-    function updateCustomerData(string memory _dataPayload) public {
-        require(customers[msg.sender].isRegistered, "Customer not registered");
-        customers[msg.sender].dataPayload = _dataPayload;
+
+    function registerCustomer(string memory _name) external {
+        require(!isCustomer[msg.sender], "Already registered as customer");
+        require(!isBank[msg.sender],     "Address is a bank");
+        isCustomer[msg.sender] = true;
+        customerNames[msg.sender] = _name;
+        registeredCustomers.push(msg.sender);
+        emit CustomerRegistered(msg.sender, _name);
     }
 
-    // Customer grants access to a specific bank and sets status to Pending
-    function grantAccess(address _bankAddress) public {
-        require(customers[msg.sender].isRegistered, "Customer not registered");
-        require(banks[_bankAddress].isRegistered, "Target bank is not registered");
-        
-        customerBankAccess[msg.sender][_bankAddress] = true;
-        bankCustomerStatus[_bankAddress][msg.sender] = "Pending";
-        
-        emit AccessGranted(msg.sender, _bankAddress);
-    }
-    
-    // Customer revokes access to a specific bank
-    function revokeAccess(address _bankAddress) public {
-        require(customers[msg.sender].isRegistered, "Customer not registered");
-        
-        customerBankAccess[msg.sender][_bankAddress] = false;
-        bankCustomerStatus[_bankAddress][msg.sender] = "None";
-        
-        emit AccessRevoked(msg.sender, _bankAddress);
+    // ── KYC Flow ───────────────────────────────────────────────────
+
+    /// @notice Bank initiates a KYC request for a customer  (NONE → PENDING)
+    function initiateKYC(address _customer) external returns (uint256) {
+        require(isBank[msg.sender],     "Only banks can initiate");
+        require(isCustomer[_customer],  "Target is not a customer");
+
+        uint256 id = requestCount++;
+        requests[id] = KYCRequest({
+            bank:         msg.sender,
+            customer:     _customer,
+            status:       Status.Pending,
+            documentHash: "",
+            createdAt:    block.timestamp,
+            updatedAt:    block.timestamp
+        });
+
+        bankRequests[msg.sender].push(id);
+        customerRequests[_customer].push(id);
+
+        emit KYCInitiated(id, msg.sender, _customer);
+        return id;
     }
 
-    // Bank views customer data (Requires access)
-    function viewCustomerKYC(address _customerAddress) public view returns (string memory, string memory, string memory) {
-        require(banks[msg.sender].isRegistered, "Only banks can view");
-        require(customerBankAccess[_customerAddress][msg.sender], "Access Denied by Customer");
-        
-        return (
-            customers[_customerAddress].userName, 
-            customers[_customerAddress].dataPayload, 
-            bankCustomerStatus[msg.sender][_customerAddress]
-        );
-    }
-    
-    // Bank approves the KYC
-    function approveKYC(address _customerAddress) public {
-        require(banks[msg.sender].isRegistered, "Only banks can approve");
-        require(customerBankAccess[_customerAddress][msg.sender], "Access Denied");
-        bankCustomerStatus[msg.sender][_customerAddress] = "Approved";
-        emit KYCStatusChanged(_customerAddress, msg.sender, "Approved");
-    }
-    
-    // Bank rejects the KYC
-    function rejectKYC(address _customerAddress) public {
-        require(banks[msg.sender].isRegistered, "Only banks can reject");
-        require(customerBankAccess[_customerAddress][msg.sender], "Access Denied");
-        bankCustomerStatus[msg.sender][_customerAddress] = "Rejected";
-        emit KYCStatusChanged(_customerAddress, msg.sender, "Rejected");
+    /// @notice Customer accepts the bank's request  (PENDING → ACCEPTED)
+    function acceptRequest(uint256 _requestId) external {
+        KYCRequest storage r = requests[_requestId];
+        require(r.customer == msg.sender,    "Not your request");
+        require(r.status == Status.Pending,  "Status must be Pending");
+
+        r.status    = Status.Accepted;
+        r.updatedAt = block.timestamp;
+        emit KYCAccepted(_requestId, msg.sender);
     }
 
-    // Helper functions for frontend fetching logic
-    function getAllBanks() public view returns (Bank[] memory) {
-        Bank[] memory activeBanks = new Bank[](registeredBankAddresses.length);
-        for(uint i = 0; i < registeredBankAddresses.length; i++) {
-            activeBanks[i] = banks[registeredBankAddresses[i]];
+    /// @notice Customer submits document hash  (ACCEPTED → SUBMITTED)
+    function submitKYC(uint256 _requestId, string memory _docHash) external {
+        KYCRequest storage r = requests[_requestId];
+        require(r.customer == msg.sender,     "Not your request");
+        require(r.status == Status.Accepted,  "Status must be Accepted");
+        require(bytes(_docHash).length > 0,   "Hash cannot be empty");
+
+        r.documentHash = _docHash;
+        r.status       = Status.Submitted;
+        r.updatedAt    = block.timestamp;
+        emit KYCSubmitted(_requestId, msg.sender, _docHash);
+    }
+
+    /// @notice Bank verifies the submitted documents  (SUBMITTED → VERIFIED)
+    function verifyKYC(uint256 _requestId) external {
+        KYCRequest storage r = requests[_requestId];
+        require(r.bank == msg.sender,          "Not your request");
+        require(r.status == Status.Submitted,  "Status must be Submitted");
+
+        r.status    = Status.Verified;
+        r.updatedAt = block.timestamp;
+        emit KYCVerified(_requestId, msg.sender);
+    }
+
+    /// @notice Bank rejects at any stage after Pending  (→ REJECTED)
+    function rejectKYC(uint256 _requestId) external {
+        KYCRequest storage r = requests[_requestId];
+        require(r.bank == msg.sender,         "Not your request");
+        require(r.status != Status.None,      "No request found");
+        require(r.status != Status.Verified,  "Already verified");
+        require(r.status != Status.Rejected,  "Already rejected");
+
+        r.status    = Status.Rejected;
+        r.updatedAt = block.timestamp;
+        emit KYCRejected(_requestId, msg.sender);
+    }
+
+    /// @notice Customer re-opens a rejected request  (REJECTED → ACCEPTED)
+    ///         so they can update docs and re-submit.
+    function reopenRequest(uint256 _requestId) external {
+        KYCRequest storage r = requests[_requestId];
+        require(r.customer == msg.sender,     "Not your request");
+        require(r.status == Status.Rejected,  "Status must be Rejected");
+
+        r.status       = Status.Accepted;
+        r.documentHash = "";           // clear old hash so customer can re-submit
+        r.updatedAt    = block.timestamp;
+        emit KYCReopened(_requestId, msg.sender);
+    }
+
+    // ── View Helpers ───────────────────────────────────────────────
+
+    function getRequest(uint256 _id) external view returns (KYCRequest memory) {
+        return requests[_id];
+    }
+
+    function getCustomerRequestIds(address _customer) external view returns (uint256[] memory) {
+        return customerRequests[_customer];
+    }
+
+    function getBankRequestIds(address _bank) external view returns (uint256[] memory) {
+        return bankRequests[_bank];
+    }
+
+    function getAllBanks() external view returns (address[] memory, string[] memory) {
+        string[] memory names = new string[](registeredBanks.length);
+        for (uint i = 0; i < registeredBanks.length; i++) {
+            names[i] = bankNames[registeredBanks[i]];
         }
-        return activeBanks;
+        return (registeredBanks, names);
     }
 
-    function getAllCustomers() public view returns (Customer[] memory, address[] memory) {
-        Customer[] memory activeCustomers = new Customer[](registeredCustomerAddresses.length);
-        for(uint i = 0; i < registeredCustomerAddresses.length; i++) {
-            activeCustomers[i] = customers[registeredCustomerAddresses[i]];
+    function getAllCustomers() external view returns (address[] memory, string[] memory) {
+        string[] memory names = new string[](registeredCustomers.length);
+        for (uint i = 0; i < registeredCustomers.length; i++) {
+            names[i] = customerNames[registeredCustomers[i]];
         }
-        return (activeCustomers, registeredCustomerAddresses);
-    }
-
-    // Utility to get a customer's specific status with a specific bank
-    function getStatusWithBank(address _customerAddress, address _bankAddress) public view returns (string memory, bool) {
-        return (bankCustomerStatus[_bankAddress][_customerAddress], customerBankAccess[_customerAddress][_bankAddress]);
-    }
-
-    // Feedback functions
-    function addFeedback(address _bankAddress, string memory _message) public {
-        require(customers[msg.sender].isRegistered, "Only registered customers can leave feedback");
-        require(banks[_bankAddress].isRegistered, "Bank is not registered");
-        
-        bankFeedbacks[_bankAddress].push(Feedback({
-            customer: msg.sender,
-            userName: customers[msg.sender].userName,
-            message: _message
-        }));
-    }
-    
-    function getBankFeedbacks(address _bankAddress) public view returns (Feedback[] memory) {
-        require(banks[_bankAddress].isRegistered, "Bank is not registered");
-        return bankFeedbacks[_bankAddress];
+        return (registeredCustomers, names);
     }
 }
