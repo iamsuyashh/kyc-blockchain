@@ -5,7 +5,7 @@ import contractAddress from './config/contract-address.json';
 
 // ── Config ─────────────────────────────────────────────────────────
 const GANACHE_URL = "http://127.0.0.1:8545";
-const API_URL    = "http://localhost:4000/api";
+const API_URL = "http://localhost:4000/api";
 
 // ── Helpers ────────────────────────────────────────────────────────
 const api = (path, opts = {}) => {
@@ -24,16 +24,16 @@ const api = (path, opts = {}) => {
   });
 };
 
-const STATUS_MAP  = ["None", "Pending", "Accepted", "Submitted", "Verified", "Rejected"];
+const STATUS_MAP = ["None", "Pending", "Accepted", "Submitted", "Verified", "Rejected"];
 const STATUS_FLOW = ["Pending", "Accepted", "Submitted", "Verified"];
-const shortAddr   = (a) => a ? `${a.slice(0, 6)}…${a.slice(-4)}` : "";
+const shortAddr = (a) => a ? `${a.slice(0, 6)}…${a.slice(-4)}` : "";
 
 // ════════════════════════════════════════════════════════════════════
 // MAIN APP
 // ════════════════════════════════════════════════════════════════════
 export default function App() {
   // ── Auth state ────────────────────────────────────────────────
-  const [user, setUser]     = useState(null);   // { id, username, role, displayName, ethAddress }
+  const [user, setUser] = useState(null);   // { id, username, role, displayName, ethAddress }
   const [authTab, setAuthTab] = useState("login");
   const [authForm, setAuthForm] = useState({ username: "", password: "", displayName: "", role: "customer" });
   const [authError, setAuthError] = useState("");
@@ -44,14 +44,14 @@ export default function App() {
   const [isRegisteredOnChain, setIsRegisteredOnChain] = useState(false);
 
   // ── UI state ──────────────────────────────────────────────────
-  const [activeTab, setActiveTab]       = useState("Dashboard");
-  const [errorMsg, setErrorMsg]         = useState("");
-  const [successMsg, setSuccessMsg]     = useState("");
-  const [loading, setLoading]           = useState(false);
+  const [activeTab, setActiveTab] = useState("Dashboard");
+  const [errorMsg, setErrorMsg] = useState("");
+  const [successMsg, setSuccessMsg] = useState("");
+  const [loading, setLoading] = useState(false);
 
   // ── Data state ────────────────────────────────────────────────
-  const [kycRequests, setKycRequests]   = useState([]);
-  const [documents, setDocuments]       = useState([]);
+  const [kycRequests, setKycRequests] = useState([]);
+  const [documents, setDocuments] = useState([]);
   const [allCustomers, setAllCustomers] = useState([]);
   const [selectedRequest, setSelectedRequest] = useState(null);
   const [selectedReviewDocs, setSelectedReviewDocs] = useState([]);
@@ -67,6 +67,19 @@ export default function App() {
 
   // Initiate KYC form
   const [initiateAddr, setInitiateAddr] = useState("");
+
+  // Document selection for submission
+  const [selectedDocIds, setSelectedDocIds] = useState({}); // { requestId: [docId1, docId2] }
+
+  const toggleDocSelection = (reqId, docId) => {
+    setSelectedDocIds(prev => {
+      const current = prev[reqId] || [];
+      const next = current.includes(docId)
+        ? current.filter(id => id !== docId)
+        : [...current, docId];
+      return { ...prev, [reqId]: next };
+    });
+  };
 
   // ── Boot: restore session ─────────────────────────────────────
   useEffect(() => {
@@ -86,13 +99,13 @@ export default function App() {
     (async () => {
       try {
         const provider = new ethers.JsonRpcProvider(GANACHE_URL);
-        const signer   = await provider.getSigner(user.ethAddress);
+        const signer = await provider.getSigner(user.ethAddress);
         const c = new ethers.Contract(contractAddress.address, KYCArtifact.abi, signer);
         setContract(c);
 
         // Check if already registered on-chain
-        const isBk  = await c.isBank(user.ethAddress);
-        const isCu  = await c.isCustomer(user.ethAddress);
+        const isBk = await c.isBank(user.ethAddress);
+        const isCu = await c.isCustomer(user.ethAddress);
         setIsRegisteredOnChain(isBk || isCu);
 
         // Auto-register on chain if not yet
@@ -126,10 +139,16 @@ export default function App() {
       const reqs = [];
       for (const id of ids) {
         const r = await contract.getRequest(id);
+        const [bankName, customerName] = await Promise.all([
+          contract.bankNames(r.bank),
+          contract.customerNames(r.customer)
+        ]);
         reqs.push({
           id: Number(id),
           bank: r.bank,
+          bankName,
           customer: r.customer,
+          customerName,
           status: STATUS_MAP[Number(r.status)],
           documentHash: r.documentHash,
           createdAt: Number(r.createdAt),
@@ -258,19 +277,29 @@ export default function App() {
   };
 
   const submitKYC = async (reqId) => {
-    if (!contract || documents.length === 0) {
-      setErrorMsg("Upload documents first before submitting KYC.");
+    const selectedIds = selectedDocIds[reqId] || [];
+    const toSubmit = documents.filter(d => selectedIds.includes(d.id));
+
+    if (!contract) return;
+    if (toSubmit.length === 0) {
+      setErrorMsg("Please select at least one document to submit.");
       return;
     }
     clearMessages();
     setLoading(true);
     try {
-      // Build a hash from the doc numbers
-      const payload = documents.map(d => `${d.doc_type}:${d.doc_number}`).join("|");
+      // Build a hash from the selected doc numbers
+      const payload = toSubmit.map(d => `${d.doc_type}:${d.doc_number}`).join("|");
       const hash = ethers.keccak256(ethers.toUtf8Bytes(payload));
       const tx = await contract.submitKYC(reqId, hash);
       await tx.wait();
       setSuccessMsg("Documents submitted to blockchain!");
+      // Clear selection
+      setSelectedDocIds(prev => {
+        const next = { ...prev };
+        delete next[reqId];
+        return next;
+      });
       await fetchKycRequests();
     } catch (err) { setErrorMsg(err.reason || err.message); }
     finally { setLoading(false); }
@@ -419,7 +448,7 @@ export default function App() {
           else if (i < currentIdx) cls += " done";
           else if (i === currentIdx) cls += " active";
           return (
-            <div key={s} style={{display:'flex',alignItems:'center',flex:1}}>
+            <div key={s} style={{ display: 'flex', alignItems: 'center', flex: 1 }}>
               <div className={cls}>
                 <div className="step-dot">
                   {isRejected && i === currentIdx ? "✕" : (i < currentIdx ? "✓" : i + 1)}
@@ -459,15 +488,15 @@ export default function App() {
                 <input
                   placeholder="e.g. HDFC Bank or John Doe"
                   value={authForm.displayName}
-                  onChange={e => setAuthForm({...authForm, displayName: e.target.value})}
+                  onChange={e => setAuthForm({ ...authForm, displayName: e.target.value })}
                   required
                 />
                 <label>Role</label>
                 <div className="role-selector">
-                  <button type="button" className={`role-btn ${authForm.role === 'customer' ? 'active' : ''}`} onClick={() => setAuthForm({...authForm, role: 'customer'})}>
+                  <button type="button" className={`role-btn ${authForm.role === 'customer' ? 'active' : ''}`} onClick={() => setAuthForm({ ...authForm, role: 'customer' })}>
                     👤 Customer
                   </button>
-                  <button type="button" className={`role-btn ${authForm.role === 'bank' ? 'active' : ''}`} onClick={() => setAuthForm({...authForm, role: 'bank'})}>
+                  <button type="button" className={`role-btn ${authForm.role === 'bank' ? 'active' : ''}`} onClick={() => setAuthForm({ ...authForm, role: 'bank' })}>
                     🏦 Bank
                   </button>
                 </div>
@@ -477,7 +506,7 @@ export default function App() {
             <input
               placeholder="Enter username"
               value={authForm.username}
-              onChange={e => setAuthForm({...authForm, username: e.target.value})}
+              onChange={e => setAuthForm({ ...authForm, username: e.target.value })}
               required
             />
             <label>Password</label>
@@ -485,14 +514,14 @@ export default function App() {
               type="password"
               placeholder="Enter password"
               value={authForm.password}
-              onChange={e => setAuthForm({...authForm, password: e.target.value})}
+              onChange={e => setAuthForm({ ...authForm, password: e.target.value })}
               required
             />
 
             {authError && <div className="alert alert-error">{authError}</div>}
 
             <button className="btn-primary w-full mt-3" type="submit" disabled={authLoading}>
-              {authLoading && <span className="spinner"/>}
+              {authLoading && <span className="spinner" />}
               {authTab === "login" ? "Sign In" : "Create Account"}
             </button>
           </form>
@@ -510,16 +539,16 @@ export default function App() {
   // Tab config per role
   const navItems = isBank
     ? [
-        { key: "Dashboard",   icon: "📊", label: "Dashboard" },
-        { key: "Initiate",    icon: "📤", label: "Initiate KYC" },
-        { key: "Requests",    icon: "📥", label: "KYC Queue" },
-      ]
+      { key: "Dashboard", icon: "📊", label: "Dashboard" },
+      { key: "Initiate", icon: "📤", label: "Initiate KYC" },
+      { key: "Requests", icon: "📥", label: "KYC Queue" },
+    ]
     : [
-        { key: "Dashboard",   icon: "📊", label: "Dashboard" },
-        { key: "Profile",     icon: "👤", label: "My Profile" },
-        { key: "KYCStatus",   icon: "🔐", label: "KYC Requests" },
-        { key: "Documents",   icon: "📄", label: "My Documents" },
-      ];
+      { key: "Dashboard", icon: "📊", label: "Dashboard" },
+      { key: "Profile", icon: "👤", label: "My Profile" },
+      { key: "KYCStatus", icon: "🔐", label: "KYC Requests" },
+      { key: "Documents", icon: "📄", label: "My Documents" },
+    ];
 
   return (
     <div className="dashboard-layout">
@@ -541,11 +570,11 @@ export default function App() {
         ))}
 
         <div className="nav-divider" />
-        <div style={{fontSize:'0.75rem',color:'var(--text-muted)',padding:'0 0.5rem',marginBottom:'0.5rem'}}>
+        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', padding: '0 0.5rem', marginBottom: '0.5rem' }}>
           Eth: {shortAddr(user.ethAddress)}
         </div>
 
-        <div style={{flex:1}} />
+        <div style={{ flex: 1 }} />
         <button className="btn-outline w-full" onClick={handleLogout}>Logout</button>
       </div>
 
@@ -554,7 +583,7 @@ export default function App() {
         <div className="page-header">
           <div className="flex gap-3 items-center">
             <h2>{activeTab === "KYCStatus" ? "KYC Requests" : activeTab === "Profile" ? "My Profile" : activeTab}</h2>
-            <button className="btn-outline" onClick={forceRefresh} style={{padding:'0.4rem 0.8rem',fontSize:'0.78rem'}}>🔄 Refresh</button>
+            <button className="btn-outline" onClick={forceRefresh} style={{ padding: '0.4rem 0.8rem', fontSize: '0.78rem' }}>🔄 Refresh</button>
           </div>
           <span className="address-tag">{user.role === 'bank' ? '🏦 Bank' : '👤 Customer'} • {user.username}</span>
         </div>
@@ -580,7 +609,7 @@ export default function App() {
               </div>
               <div className="stat-card amber">
                 <div className="stat-label">Pending Action</div>
-                <div className="stat-value">{kycRequests.filter(r => ['Pending','Accepted'].includes(r.status)).length}</div>
+                <div className="stat-value">{kycRequests.filter(r => ['Pending', 'Accepted'].includes(r.status)).length}</div>
               </div>
               <div className="stat-card blue">
                 <div className="stat-label">Documents</div>
@@ -608,8 +637,8 @@ export default function App() {
                 <div className="card" key={req.id}>
                   <div className="flex justify-between items-center mb-3">
                     <div>
-                      <h3 style={{marginBottom:'0.1rem'}}>Request #{req.id}</h3>
-                      <p style={{margin:0,fontSize:'0.82rem'}}>From Bank: {shortAddr(req.bank)}</p>
+                      <h3 style={{ marginBottom: '0.1rem' }}>Request #{req.id}</h3>
+                      <p style={{ margin: 0, fontSize: '0.82rem' }}>From Bank: <strong>{req.bankName}</strong> ({shortAddr(req.bank)})</p>
                     </div>
                     <span className={`badge badge-${req.status.toLowerCase()}`}>{req.status}</span>
                   </div>
@@ -623,23 +652,50 @@ export default function App() {
                       </button>
                     )}
                     {req.status === "Accepted" && (
-                      <button className="btn-success" onClick={() => submitKYC(req.id)} disabled={loading}>
-                        📤 Submit Documents
-                      </button>
+                      <div style={{ width: '100%' }}>
+                        <div style={{ marginBottom: '1rem', border: '1px solid var(--border)', borderRadius: '8px', padding: '1rem', background: 'rgba(0,0,0,0.02)' }}>
+                          <h4 style={{ marginTop: 0, marginBottom: '0.8rem', fontSize: '0.9rem', color: 'var(--text-main)' }}>Select Documents to Share</h4>
+                          {documents.length === 0 ? (
+                            <p style={{ fontSize: '0.8rem', color: 'var(--red)', margin: 0 }}>No documents found. Please upload documents in "My Documents" first.</p>
+                          ) : (
+                            <div className="flex flex-col gap-2">
+                              {documents.map(d => (
+                                <label key={d.id} className="flex gap-2 items-center cursor-pointer hover:opacity-80" style={{ fontSize: '0.85rem' }}>
+                                  <input 
+                                    type="checkbox" 
+                                    style={{ width: '16px', height: '16px' }}
+                                    checked={(selectedDocIds[req.id] || []).includes(d.id)}
+                                    onChange={() => toggleDocSelection(req.id, d.id)}
+                                  />
+                                  <span style={{ textTransform: 'capitalize' }}>{d.doc_type}</span>
+                                  <code style={{ fontSize: '0.75rem', background: 'var(--bg-light)', padding: '0.1rem 0.3rem', borderRadius: '4px' }}>{d.doc_number}</code>
+                                </label>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                        <button 
+                          className="btn-success w-full" 
+                          onClick={() => submitKYC(req.id)} 
+                          disabled={loading || (selectedDocIds[req.id] || []).length === 0}
+                        >
+                          {loading ? <span className="spinner" /> : '📤'} Submit Selected Documents
+                        </button>
+                      </div>
                     )}
                     {(req.status === "Submitted") && (
-                      <p style={{color:'var(--text-muted)',margin:0,fontSize:'0.85rem'}}>⏳ Waiting for bank verification…</p>
+                      <p style={{ color: 'var(--text-muted)', margin: 0, fontSize: '0.85rem' }}>⏳ Waiting for bank verification…</p>
                     )}
                     {req.status === "Verified" && (
-                      <p style={{color:'var(--green)',margin:0,fontWeight:600}}>✓ Your identity has been verified!</p>
+                      <p style={{ color: 'var(--green)', margin: 0, fontWeight: 600 }}>✓ Your identity has been verified!</p>
                     )}
                     {req.status === "Rejected" && (
                       <div className="flex-col gap-2">
-                        <p style={{color:'var(--red)',margin:0,fontWeight:600}}>✕ This request was rejected by the bank.</p>
-                        <button className="btn-primary" onClick={() => reopenKYC(req.id)} disabled={loading} style={{width:'fit-content'}}>
-                          {loading && <span className="spinner"/>} 🔄 Re-apply — Update & Re-submit
+                        <p style={{ color: 'var(--red)', margin: 0, fontWeight: 600 }}>✕ This request was rejected by the bank.</p>
+                        <button className="btn-primary" onClick={() => reopenKYC(req.id)} disabled={loading} style={{ width: 'fit-content' }}>
+                          {loading && <span className="spinner" />} 🔄 Re-apply — Update & Re-submit
                         </button>
-                        <p style={{color:'var(--text-muted)',margin:0,fontSize:'0.8rem'}}>Update your profile & documents, then re-submit for review.</p>
+                        <p style={{ color: 'var(--text-muted)', margin: 0, fontSize: '0.8rem' }}>Update your profile & documents, then re-submit for review.</p>
                       </div>
                     )}
                   </div>
@@ -651,75 +707,75 @@ export default function App() {
 
         {/* ── Customer: My Profile ──────────────────────────────── */}
         {isCustomer && activeTab === "Profile" && (
-          <div className="card" style={{maxWidth:650}}>
+          <div className="card" style={{ maxWidth: 650 }}>
             <h3>Personal Information</h3>
             <p>Complete your profile. This information is stored securely in the database and shared with banks during KYC verification.</p>
 
             <form onSubmit={saveProfile}>
-              <label>Full Name <span style={{color:'var(--red)'}}>*</span></label>
+              <label>Full Name <span style={{ color: 'var(--red)' }}>*</span></label>
               <input
                 placeholder="e.g. Rajesh Kumar Sharma"
                 value={profile.fullName}
-                onChange={e => setProfile({...profile, fullName: e.target.value})}
+                onChange={e => setProfile({ ...profile, fullName: e.target.value })}
               />
-              {profileErrors.fullName && <div style={{color:'var(--red)',fontSize:'0.8rem',marginTop:'-0.75rem',marginBottom:'0.5rem'}}>{profileErrors.fullName}</div>}
+              {profileErrors.fullName && <div style={{ color: 'var(--red)', fontSize: '0.8rem', marginTop: '-0.75rem', marginBottom: '0.5rem' }}>{profileErrors.fullName}</div>}
 
-              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 1rem'}}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 1rem' }}>
                 <div>
-                  <label>Email <span style={{color:'var(--red)'}}>*</span></label>
+                  <label>Email <span style={{ color: 'var(--red)' }}>*</span></label>
                   <input
                     type="email"
                     placeholder="e.g. rajesh@email.com"
                     value={profile.email}
-                    onChange={e => setProfile({...profile, email: e.target.value})}
+                    onChange={e => setProfile({ ...profile, email: e.target.value })}
                   />
-                  {profileErrors.email && <div style={{color:'var(--red)',fontSize:'0.8rem',marginTop:'-0.75rem',marginBottom:'0.5rem'}}>{profileErrors.email}</div>}
+                  {profileErrors.email && <div style={{ color: 'var(--red)', fontSize: '0.8rem', marginTop: '-0.75rem', marginBottom: '0.5rem' }}>{profileErrors.email}</div>}
                 </div>
                 <div>
-                  <label>Phone Number <span style={{color:'var(--red)'}}>*</span></label>
+                  <label>Phone Number <span style={{ color: 'var(--red)' }}>*</span></label>
                   <input
                     placeholder="e.g. 9876543210"
                     maxLength={10}
                     value={profile.phone}
-                    onChange={e => setProfile({...profile, phone: e.target.value.replace(/\D/g, '')})}
+                    onChange={e => setProfile({ ...profile, phone: e.target.value.replace(/\D/g, '') })}
                   />
-                  {profileErrors.phone && <div style={{color:'var(--red)',fontSize:'0.8rem',marginTop:'-0.75rem',marginBottom:'0.5rem'}}>{profileErrors.phone}</div>}
+                  {profileErrors.phone && <div style={{ color: 'var(--red)', fontSize: '0.8rem', marginTop: '-0.75rem', marginBottom: '0.5rem' }}>{profileErrors.phone}</div>}
                 </div>
               </div>
 
-              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 1rem'}}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 1rem' }}>
                 <div>
-                  <label>Date of Birth <span style={{color:'var(--red)'}}>*</span></label>
+                  <label>Date of Birth <span style={{ color: 'var(--red)' }}>*</span></label>
                   <input
                     type="date"
                     value={profile.dob}
-                    onChange={e => setProfile({...profile, dob: e.target.value})}
+                    onChange={e => setProfile({ ...profile, dob: e.target.value })}
                   />
-                  {profileErrors.dob && <div style={{color:'var(--red)',fontSize:'0.8rem',marginTop:'-0.75rem',marginBottom:'0.5rem'}}>{profileErrors.dob}</div>}
+                  {profileErrors.dob && <div style={{ color: 'var(--red)', fontSize: '0.8rem', marginTop: '-0.75rem', marginBottom: '0.5rem' }}>{profileErrors.dob}</div>}
                 </div>
                 <div>
-                  <label>Gender <span style={{color:'var(--red)'}}>*</span></label>
-                  <select value={profile.gender} onChange={e => setProfile({...profile, gender: e.target.value})}>
+                  <label>Gender <span style={{ color: 'var(--red)' }}>*</span></label>
+                  <select value={profile.gender} onChange={e => setProfile({ ...profile, gender: e.target.value })}>
                     <option value="">-- Select --</option>
                     <option value="male">Male</option>
                     <option value="female">Female</option>
                     <option value="other">Other</option>
                   </select>
-                  {profileErrors.gender && <div style={{color:'var(--red)',fontSize:'0.8rem',marginTop:'-0.75rem',marginBottom:'0.5rem'}}>{profileErrors.gender}</div>}
+                  {profileErrors.gender && <div style={{ color: 'var(--red)', fontSize: '0.8rem', marginTop: '-0.75rem', marginBottom: '0.5rem' }}>{profileErrors.gender}</div>}
                 </div>
               </div>
 
-              <label>Residential Address <span style={{color:'var(--red)'}}>*</span></label>
+              <label>Residential Address <span style={{ color: 'var(--red)' }}>*</span></label>
               <textarea
                 placeholder="Full address with city, state and pincode"
                 rows={3}
                 value={profile.address}
-                onChange={e => setProfile({...profile, address: e.target.value})}
+                onChange={e => setProfile({ ...profile, address: e.target.value })}
               />
-              {profileErrors.address && <div style={{color:'var(--red)',fontSize:'0.8rem',marginTop:'-0.75rem',marginBottom:'0.5rem'}}>{profileErrors.address}</div>}
+              {profileErrors.address && <div style={{ color: 'var(--red)', fontSize: '0.8rem', marginTop: '-0.75rem', marginBottom: '0.5rem' }}>{profileErrors.address}</div>}
 
               <button className="btn-primary mt-3" type="submit" disabled={loading}>
-                {loading && <span className="spinner"/>} 💾 Save Profile
+                {loading && <span className="spinner" />} 💾 Save Profile
               </button>
             </form>
           </div>
@@ -728,13 +784,13 @@ export default function App() {
         {/* ── Customer: My Documents ─────────────────────────────── */}
         {isCustomer && activeTab === "Documents" && (
           <div>
-            <div className="card" style={{maxWidth:600}}>
+            <div className="card" style={{ maxWidth: 600 }}>
               <h3>Upload Identity Document</h3>
               <p>Your documents are stored securely in the backend database and <em>never</em> placed on the public blockchain.</p>
 
               <form onSubmit={uploadDocument}>
                 <label>Document Type</label>
-                <select value={docForm.docType} onChange={e => { setDocForm({...docForm, docType: e.target.value}); setDocErrors(""); }}>
+                <select value={docForm.docType} onChange={e => { setDocForm({ ...docForm, docType: e.target.value }); setDocErrors(""); }}>
                   <option value="aadhar">Aadhar Card</option>
                   <option value="pan">PAN Card</option>
                   <option value="voter">Voter ID</option>
@@ -744,20 +800,20 @@ export default function App() {
                 <input
                   placeholder={docForm.docType === 'aadhar' ? 'e.g. 1234 5678 9012 (12 digits)' : docForm.docType === 'pan' ? 'e.g. ABCDE1234F' : 'e.g. ABC1234567'}
                   value={docForm.docNumber}
-                  onChange={e => { setDocForm({...docForm, docNumber: e.target.value}); setDocErrors(""); }}
+                  onChange={e => { setDocForm({ ...docForm, docNumber: e.target.value }); setDocErrors(""); }}
                   required
                 />
-                {docErrors && <div style={{color:'var(--red)',fontSize:'0.82rem',marginTop:'-0.75rem',marginBottom:'0.75rem'}}>{docErrors}</div>}
+                {docErrors && <div style={{ color: 'var(--red)', fontSize: '0.82rem', marginTop: '-0.75rem', marginBottom: '0.75rem' }}>{docErrors}</div>}
 
                 <label>Upload Scan (optional)</label>
                 <input
                   type="file"
                   accept="image/*,.pdf"
-                  onChange={e => setDocForm({...docForm, file: e.target.files[0]})}
+                  onChange={e => setDocForm({ ...docForm, file: e.target.files[0] })}
                 />
 
                 <button className="btn-primary mt-3" type="submit" disabled={loading}>
-                  {loading && <span className="spinner"/>} 💾 Save Document
+                  {loading && <span className="spinner" />} 💾 Save Document
                 </button>
               </form>
             </div>
@@ -803,7 +859,7 @@ export default function App() {
               </div>
               <div className="stat-card amber">
                 <div className="stat-label">Awaiting Action</div>
-                <div className="stat-value">{kycRequests.filter(r => ['Pending','Accepted','Submitted'].includes(r.status)).length}</div>
+                <div className="stat-value">{kycRequests.filter(r => ['Pending', 'Accepted', 'Submitted'].includes(r.status)).length}</div>
               </div>
               <div className="stat-card green">
                 <div className="stat-label">Verified</div>
@@ -823,7 +879,7 @@ export default function App() {
 
         {/* ── Bank: Initiate KYC ─────────────────────────────────── */}
         {isBank && activeTab === "Initiate" && (
-          <div className="card" style={{maxWidth:600}}>
+          <div className="card" style={{ maxWidth: 600 }}>
             <h3>Initiate KYC Request</h3>
             <p>Select a registered customer to send a KYC verification request to.</p>
 
@@ -838,7 +894,7 @@ export default function App() {
             </select>
 
             <button className="btn-primary mt-3" onClick={initiateKYC} disabled={loading || !initiateAddr}>
-              {loading && <span className="spinner"/>} 📤 Send KYC Request
+              {loading && <span className="spinner" />} 📤 Send KYC Request
             </button>
           </div>
         )}
@@ -867,11 +923,14 @@ export default function App() {
                   {kycRequests.map(r => (
                     <tr key={r.id}>
                       <td>#{r.id}</td>
-                      <td><small>{shortAddr(r.customer)}</small></td>
+                      <td>
+                        <div style={{ fontWeight: 600 }}>{r.customerName}</div>
+                        <small style={{ color: 'var(--text-muted)' }}>{shortAddr(r.customer)}</small>
+                      </td>
                       <td><span className={`badge badge-${r.status.toLowerCase()}`}>{r.status}</span></td>
                       <td><small>{new Date(r.createdAt * 1000).toLocaleDateString()}</small></td>
                       <td>
-                        <button className="btn-outline" style={{padding:'0.35rem 0.7rem',fontSize:'0.8rem'}} onClick={async () => {
+                        <button className="btn-outline" style={{ padding: '0.35rem 0.7rem', fontSize: '0.8rem' }} onClick={async () => {
                           setSelectedRequest(r);
                           if (r.status === 'Submitted' || r.status === 'Verified') {
                             await loadCustomerDocs(r.customer);
@@ -890,7 +949,7 @@ export default function App() {
 
         {/* ── Bank: Request Detail / Review ──────────────────────── */}
         {isBank && activeTab === "Requests" && selectedRequest && (
-          <div className="card" style={{maxWidth:800}}>
+          <div className="card" style={{ maxWidth: 800 }}>
             <button className="btn-outline mb-4" onClick={() => { setSelectedRequest(null); setSelectedReviewDocs([]); setSelectedReviewProfile(null); }}>
               ← Back to Queue
             </button>
@@ -903,12 +962,12 @@ export default function App() {
 
             <div className="review-grid">
               <div>
-                <div className="field-label">Customer Address</div>
-                <div className="field-value">{shortAddr(selectedRequest.customer)}</div>
+                <div className="field-label">Customer</div>
+                <div className="field-value"><strong>{selectedRequest.customerName}</strong> <small style={{ fontWeight: 400, color: 'var(--text-muted)' }}>({shortAddr(selectedRequest.customer)})</small></div>
               </div>
               <div>
-                <div className="field-label">Bank Address</div>
-                <div className="field-value">{shortAddr(selectedRequest.bank)}</div>
+                <div className="field-label">Bank</div>
+                <div className="field-value"><strong>{selectedRequest.bankName}</strong> <small style={{ fontWeight: 400, color: 'var(--text-muted)' }}>({shortAddr(selectedRequest.bank)})</small></div>
               </div>
               <div>
                 <div className="field-label">Created</div>
@@ -919,9 +978,9 @@ export default function App() {
                 <div className="field-value">{new Date(selectedRequest.updatedAt * 1000).toLocaleString()}</div>
               </div>
               {selectedRequest.documentHash && (
-                <div style={{gridColumn:'1 / -1'}}>
+                <div style={{ gridColumn: '1 / -1' }}>
                   <div className="field-label">Document Hash (Blockchain)</div>
-                  <div className="field-value" style={{fontSize:'0.8rem',wordBreak:'break-all',fontFamily:'monospace',fontWeight:400}}>{selectedRequest.documentHash}</div>
+                  <div className="field-value" style={{ fontSize: '0.8rem', wordBreak: 'break-all', fontFamily: 'monospace', fontWeight: 400 }}>{selectedRequest.documentHash}</div>
                 </div>
               )}
             </div>
@@ -936,7 +995,7 @@ export default function App() {
                   <div><div className="field-label">Email</div><div className="field-value">{selectedReviewProfile.email || 'N/A'}</div></div>
                   <div><div className="field-label">Phone</div><div className="field-value">{selectedReviewProfile.phone || 'N/A'}</div></div>
                   <div><div className="field-label">Date of Birth</div><div className="field-value">{selectedReviewProfile.dob || 'N/A'}</div></div>
-                  <div><div className="field-label">Gender</div><div className="field-value" style={{textTransform:'capitalize'}}>{selectedReviewProfile.gender || 'N/A'}</div></div>
+                  <div><div className="field-label">Gender</div><div className="field-value" style={{ textTransform: 'capitalize' }}>{selectedReviewProfile.gender || 'N/A'}</div></div>
                   <div><div className="field-label">Address</div><div className="field-value">{selectedReviewProfile.address || 'N/A'}</div></div>
                 </div>
               </>
@@ -969,7 +1028,7 @@ export default function App() {
               {selectedRequest.status === "Submitted" && (
                 <>
                   <button className="btn-success" onClick={() => verifyKYC(selectedRequest.id)} disabled={loading}>
-                    {loading && <span className="spinner"/>} ✓ Verify KYC
+                    {loading && <span className="spinner" />} ✓ Verify KYC
                   </button>
                   <button className="btn-danger" onClick={() => rejectKYC(selectedRequest.id)} disabled={loading}>
                     ✕ Reject
@@ -978,25 +1037,25 @@ export default function App() {
               )}
               {selectedRequest.status === "Pending" && (
                 <>
-                  <p style={{color:'var(--text-muted)',margin:0}}>⏳ Waiting for customer to accept…</p>
-                  <button className="btn-danger" onClick={() => rejectKYC(selectedRequest.id)} disabled={loading} style={{marginLeft:'auto'}}>
+                  <p style={{ color: 'var(--text-muted)', margin: 0 }}>⏳ Waiting for customer to accept…</p>
+                  <button className="btn-danger" onClick={() => rejectKYC(selectedRequest.id)} disabled={loading} style={{ marginLeft: 'auto' }}>
                     ✕ Reject Request
                   </button>
                 </>
               )}
               {selectedRequest.status === "Accepted" && (
                 <>
-                  <p style={{color:'var(--text-muted)',margin:0}}>⏳ Customer accepted, waiting for document submission…</p>
-                  <button className="btn-danger" onClick={() => rejectKYC(selectedRequest.id)} disabled={loading} style={{marginLeft:'auto'}}>
+                  <p style={{ color: 'var(--text-muted)', margin: 0 }}>⏳ Customer accepted, waiting for document submission…</p>
+                  <button className="btn-danger" onClick={() => rejectKYC(selectedRequest.id)} disabled={loading} style={{ marginLeft: 'auto' }}>
                     ✕ Reject Request
                   </button>
                 </>
               )}
               {selectedRequest.status === "Verified" && (
-                <p style={{color:'var(--green)',margin:0,fontWeight:600}}>✓ This KYC is fully verified.</p>
+                <p style={{ color: 'var(--green)', margin: 0, fontWeight: 600 }}>✓ This KYC is fully verified.</p>
               )}
               {selectedRequest.status === "Rejected" && (
-                <p style={{color:'var(--red)',margin:0,fontWeight:600}}>✕ This request was rejected. Customer can re-apply.</p>
+                <p style={{ color: 'var(--red)', margin: 0, fontWeight: 600 }}>✕ This request was rejected. Customer can re-apply.</p>
               )}
             </div>
           </div>
